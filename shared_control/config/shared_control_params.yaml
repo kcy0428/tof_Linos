@@ -1,0 +1,43 @@
+tof_bridge:
+  ros__parameters:
+    roi_rows: [2, 5]
+    roi_cols: [2, 5]
+    valid_status: [5, 9]
+    stale_timeout: 0.5
+    publish_rate: 20.0
+
+obstacle_detector:
+  ros__parameters:
+    # 정면 2단계 감지
+    enter_threshold: 0.4        # m  1단계: ToF 선행 감지 거리
+    exit_threshold: 0.5         # m  MANUAL 복귀 거리 (히스테리시스)
+    sector_deg: 30.0            # °  LiDAR 정면 섹터 (±이 값)
+    lidar_min_range: 0.12       # m  LiDAR 유효 최소 거리
+    lidar_confirm_threshold: 0.4 # m  2단계: LiDAR 정면 확인 거리 (보통 enter_threshold 와 동일)
+    # 측면/대각 보호
+    side_sector_lo_deg: 55.0    # °  측면 섹터 시작 (전방 0° 기준)
+    side_sector_hi_deg: 120.0   # °  측면 섹터 끝
+    side_threshold: 0.30        # m  측면 이 거리 이하면 즉시 AVOIDANCE 진입
+    rate: 20.0
+
+gap_analyzer:
+  ros__parameters:
+    sector_deg: 15.0
+    robot_width: 0.281        # m
+    margin: 0.10              # m
+    required_gap: 0.381       # m
+    rate: 10.0
+
+avoidance:
+  ros__parameters:
+    v_forward: 0.08
+    w_turn: 0.4
+    # back_v: 미사용 (후진 제거됨)
+    side_window_deg: 90.0
+    blocked_threshold: 0.15
+    rate: 20.0
+
+arbitrator:
+  ros__parameters:
+    cmd_timeout: 0.3
+    rate: 20.0

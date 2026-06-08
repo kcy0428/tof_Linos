@@ -1,0 +1,43 @@
+{
+  "keys": {},
+  "groups": {
+    "mainwindow": {
+      "keys": {
+        "geometry": { "repr(QByteArray.hex)": "", "type": "QByteArray" },
+        "state": { "repr(QByteArray.hex)": "", "type": "QByteArray" }
+      },
+      "groups": {
+        "toolbar_areas": {
+          "keys": {
+            "MinimizedDockWidgetsArea": { "repr": "8", "type": "int" }
+          }
+        }
+      }
+    },
+    "pluginmanager": {
+      "keys": {},
+      "groups": {
+        "running-plugins": {
+          "keys": {},
+          "groups": {
+            "0": {
+              "keys": {
+                "plugin_id": { "repr": "rqt_plot/Plot", "type": "str" }
+              },
+              "groups": {
+                "plugin": {
+                  "keys": {
+                    "topics": {
+                      "repr": "/tof/front_distance/data,/obstacle/distance/data,/gap/width/data",
+                      "type": "str"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
