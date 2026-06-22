@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>shared_control — 시스템 블록도 / 자동 시나리오 애니메이션</title>
+<style>
+  :root{
+    --bg:#0e1117; --panel:#161b22; --edge:#30363d; --text:#e6edf3; --muted:#8b949e;
+    --pi:#1f6feb; --vm:#8957e5;
+    --manual:#3fb950;   /* /cmd_vel_manual */
+    --tof:#d29922;      /* /tof/* */
+    --cmd:#f85149;      /* /cmd_vel */
+    --state:#a371f7;    /* /robot/state */
+    --raw:#58a6ff;      /* /joy, USB */
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100vh;overflow:hidden;background:var(--bg);color:var(--text);
+    display:flex;flex-direction:column;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans KR",sans-serif}
+  header{flex:none;padding:7px 16px;border-bottom:1px solid var(--edge);display:flex;
+    align-items:center;gap:14px;flex-wrap:wrap}
+  header h1{font-size:15px;margin:0;font-weight:650}
+  header .sub{color:var(--muted);font-size:12px}
+  .controls{margin-left:auto;display:flex;gap:8px;align-items:center}
+  button{background:var(--panel);color:var(--text);border:1px solid var(--edge);
+    border-radius:7px;padding:5px 11px;font-size:12px;cursor:pointer}
+  button:hover{border-color:#58a6ff}
+  .legend{flex:none;display:flex;gap:14px;flex-wrap:wrap;padding:6px 16px;
+    border-bottom:1px solid var(--edge);font-size:11.5px;color:var(--muted)}
+  .legend .item{display:flex;align-items:center;gap:6px}
+  .legend .swatch{width:20px;height:4px;border-radius:2px}
+  .wrap{flex:1;min-height:0;padding:6px;display:flex;align-items:center;justify-content:center}
+  svg{max-width:100%;max-height:100%;width:auto;height:auto;display:block}
+  .label{fill:var(--text);font-size:13px;font-weight:600}
+  .sublabel{fill:var(--muted);font-size:10.5px}
+  .grouplabel{fill:var(--muted);font-size:12px;font-weight:600;letter-spacing:.5px}
+  .topic{font-size:10.5px;font-weight:600}
+  .edge{fill:none}
+  .statebox{font-size:13px;font-weight:800}
+
+  /* 하단 실시간 판독부 */
+  .readout{flex:none;display:flex;gap:7px;flex-wrap:wrap;padding:7px 16px;
+    border-top:1px solid var(--edge);align-items:stretch}
+  .r-item{background:var(--panel);border:1px solid var(--edge);border-radius:8px;
+    padding:5px 11px;min-width:88px}
+  .r-item .k{display:block;font-size:10px;color:var(--muted);margin-bottom:1px}
+  .r-item .v{font-size:14px;font-weight:700;font-variant-numeric:tabular-nums}
+  .caption{flex:1;min-width:220px;display:flex;align-items:center;background:var(--panel);
+    border:1px solid var(--edge);border-radius:8px;padding:5px 14px;
+    font-size:12.5px;font-weight:600}
+  .caption .dot{width:9px;height:9px;border-radius:50%;margin-right:9px;flex:none}
+</style>
+</head>
+<body>
+<header>
+  <h1>shared_control 시스템 블록도</h1>
+  <span class="sub">ToF 입력 → 판단 → cmd_vel → DXL 모터 · 자동 시나리오 재생</span>
+  <div class="controls">
+    <button id="btnPause">⏸ 일시정지</button>
+    <button id="btnSpeed">⏩ 속도 1×</button>
+  </div>
+</header>
+
+<div class="legend">
+  <div class="item"><span class="swatch" style="background:var(--raw)"></span>원시(USB/joy)</div>
+  <div class="item"><span class="swatch" style="background:var(--manual)"></span>/cmd_vel_manual</div>
+  <div class="item"><span class="swatch" style="background:var(--tof)"></span>/tof/front,left,right</div>
+  <div class="item"><span class="swatch" style="background:var(--cmd)"></span>/cmd_vel (TwistStamped)</div>
+  <div class="item"><span class="swatch" style="background:var(--state)"></span>/robot/state</div>
+  <div class="item">💡 패킷 속도·바퀴 회전은 실제 cmd_vel 값에 비례</div>
+</div>
+
+<div class="wrap">
+<svg id="diagram" viewBox="0 0 1280 720" preserveAspectRatio="xMidYMid meet">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#6e7681"/>
+    </marker>
+  </defs>
+
+  <rect x="18" y="60" width="900" height="640" rx="14" fill="none" stroke="var(--pi)" stroke-width="1.5" stroke-dasharray="6 5" opacity="0.7"/>
+  <text x="34" y="84" class="grouplabel" fill="var(--pi)">RASPBERRY PI 5 — 센서 수집 · 장애물 판단 · 주행 제어</text>
+
+  <rect x="952" y="60" width="310" height="640" rx="14" fill="none" stroke="var(--vm)" stroke-width="1.5" stroke-dasharray="6 5" opacity="0.7"/>
+  <text x="968" y="84" class="grouplabel" fill="var(--vm)">VMware UBUNTU — 시각화 전용</text>
+  <text x="935" y="372" class="sublabel" text-anchor="middle">DDS · 동일 ROS_DOMAIN_ID</text>
+
+  <g id="edges"></g>
+  <g id="dots"></g>
+  <g id="wheels"></g>
+  <g id="nodes"></g>
+</svg>
+</div>
+
+<div class="readout">
+  <div class="r-item"><span class="k">ToF 정면</span><span class="v" id="vF" style="color:var(--tof)">– m</span></div>
+  <div class="r-item"><span class="k">ToF 좌45°</span><span class="v" id="vL" style="color:var(--tof)">– m</span></div>
+  <div class="r-item"><span class="k">ToF 우45°</span><span class="v" id="vR" style="color:var(--tof)">– m</span></div>
+  <div class="r-item"><span class="k">상태</span><span class="v" id="vState">–</span></div>
+  <div class="r-item"><span class="k">cmd 전진 v</span><span class="v" id="vV" style="color:var(--cmd)">– m/s</span></div>
+  <div class="r-item"><span class="k">cmd 회전 ω</span><span class="v" id="vW" style="color:var(--cmd)">– rad/s</span></div>
+  <div class="r-item"><span class="k">좌/우 휠</span><span class="v" id="vWheel" style="font-size:13px">– / –</span></div>
+  <div class="caption"><span class="dot" id="capDot" style="background:var(--manual)"></span><span id="caption">…</span></div>
+</div>
+
+<script>
+const NS="http://www.w3.org/2000/svg";
+function el(tag,attrs){const e=document.createElementNS(NS,tag);
+  for(const k in attrs)e.setAttribute(k,attrs[k]);return e;}
+
+// ── 노드 ──────────────────────────────────────────────────────
+const NODES={
+  gamepad:{x:40,y:120,w:150,h:54,t:"게임패드",s:"블루투스 패드"},
+  joy:{x:240,y:120,w:150,h:54,t:"joy_node",s:"→ /joy"},
+  teleop:{x:440,y:120,w:170,h:54,t:"teleop_twist_joy",s:"조이스틱→Twist"},
+  tof_hw:{x:40,y:330,w:150,h:54,t:"ToF × 3 (Pico)",s:"USB 시리얼"},
+  tof_node:{x:240,y:330,w:150,h:54,t:"tof_array",s:"8×8 그리드 파싱"},
+  assist:{x:560,y:300,w:230,h:120,t:"assist_controller",s:"상태머신 + 센서융합",big:true},
+  tb3:{x:560,y:520,w:230,h:54,t:"turtlebot3_node",s:"TwistStamped 구독"},
+  opencr:{x:330,y:520,w:160,h:54,t:"OpenCR",s:"/dev/opencr"},
+  motors:{x:80,y:500,w:170,h:54,t:"DXL 모터",s:"좌/우 휠"},
+  monitor:{x:982,y:300,w:250,h:120,t:"tb3_monitor",s:"거리·상태 시각화",vm:true},
+};
+const cx=n=>n.x+n.w/2, cy=n=>n.y+n.h/2;
+const gN=document.getElementById("nodes"),gE=document.getElementById("edges"),
+      gD=document.getElementById("dots"),gW=document.getElementById("wheels");
+
+for(const key in NODES){
+  const n=NODES[key];
+  const stroke=n.vm?"var(--vm)":(n.big?"#f85149":"#3d444d");
+  const r=el("rect",{x:n.x,y:n.y,width:n.w,height:n.h,rx:10,
+    fill:n.big?"#1c2230":(n.vm?"#241c33":"#21262d"),stroke,"stroke-width":n.big?2.2:1.6});
+  if(key==="assist")r.id="assistRect";
+  gN.appendChild(r);
+  const tx=el("text",{x:cx(n),y:n.y+(n.big?40:24),"text-anchor":"middle",class:"label"});
+  tx.textContent=n.t; gN.appendChild(tx);
+  const sx=el("text",{x:cx(n),y:n.y+(n.big?60:40),"text-anchor":"middle",class:"sublabel"});
+  sx.textContent=n.s; gN.appendChild(sx);
+}
+const stateText=el("text",{x:cx(NODES.assist),y:NODES.assist.y+94,
+  "text-anchor":"middle",class:"statebox",fill:"#3fb950"});
+gN.appendChild(stateText);
+
+// ── 엣지 ──────────────────────────────────────────────────────
+const EDGES=[
+  {from:"gamepad",to:"joy",color:"var(--raw)",topic:"BT",side:"top",kind:"manual"},
+  {from:"joy",to:"teleop",color:"var(--raw)",topic:"/joy",side:"top",kind:"manual"},
+  {from:"teleop",to:"assist",color:"var(--manual)",topic:"/cmd_vel_manual",side:"auto",kind:"manual"},
+  {from:"tof_hw",to:"tof_node",color:"var(--raw)",topic:"USB",side:"top",kind:"sensor"},
+  {from:"tof_node",to:"assist",color:"var(--tof)",topic:"/tof/front,left,right",side:"auto",kind:"sensor"},
+  {from:"assist",to:"tb3",color:"var(--cmd)",topic:"/cmd_vel",side:"down",kind:"cmd"},
+  {from:"tb3",to:"opencr",color:"var(--cmd)",topic:"제어",side:"leftrow",kind:"cmd"},
+  {from:"opencr",to:"motors",color:"var(--cmd)",topic:"PWM",side:"leftrow",kind:"cmd"},
+  {from:"assist",to:"monitor",color:"var(--state)",topic:"/robot/state",side:"right",kind:"state"},
+  {from:"tof_node",to:"monitor",color:"var(--tof)",topic:"/tof/* (구독)",side:"vmtof",kind:"sensor",dim:true},
+];
+function edgePath(a,b,side){
+  let p1,p2,mx;
+  if(side==="top"){return `M${a.x+a.w},${cy(a)} L${b.x},${cy(b)}`;}
+  if(side==="down"){return `M${cx(a)},${a.y+a.h} L${cx(b)},${b.y}`;}
+  if(side==="leftrow"){return `M${a.x},${cy(a)} L${b.x+b.w},${cy(b)}`;}
+  if(side==="right"){p1=[a.x+a.w,cy(a)-22];p2=[b.x,cy(b)-22];mx=(p1[0]+p2[0])/2;
+    return `M${p1[0]},${p1[1]} L${mx},${p1[1]} L${mx},${p2[1]} L${p2[0]},${p2[1]}`;}
+  if(side==="vmtof"){return `M${cx(a)},${a.y+a.h} L${cx(a)},662 L${b.x-42},662 L${b.x-42},${cy(b)+30} L${b.x},${cy(b)+30}`;}
+  p1=[a.x+a.w,cy(a)];p2=[b.x,cy(b)+(a.y<cy(b)?-18:18)];mx=(p1[0]+p2[0])/2;
+  return `M${p1[0]},${p1[1]} L${mx},${p1[1]} L${mx},${p2[1]} L${p2[0]},${p2[1]}`;
+}
+const edgeObjs=[];
+for(const e of EDGES){
+  const a=NODES[e.from],b=NODES[e.to];
+  const path=el("path",{d:edgePath(a,b,e.side),class:"edge",
+    stroke:e.dim?"#3d444d":"#484f58","stroke-width":2,
+    "stroke-dasharray":e.dim?"4 4":"none","marker-end":"url(#arrow)"});
+  gE.appendChild(path);
+  const len=path.getTotalLength(),mid=path.getPointAtLength(len*0.5);
+  const bb=el("rect",{fill:"var(--bg)",opacity:"0.85",rx:3});
+  const lbl=el("text",{x:mid.x,y:mid.y-7,"text-anchor":"middle",class:"topic",fill:e.color});
+  lbl.textContent=e.topic; gE.appendChild(bb); gE.appendChild(lbl);
+  requestAnimationFrame(()=>{const x=lbl.getBBox();
+    bb.setAttribute("x",x.x-3);bb.setAttribute("y",x.y-1);
+    bb.setAttribute("width",x.width+6);bb.setAttribute("height",x.height+2);});
+  edgeObjs.push({path,len,color:e.color,kind:e.kind,dim:e.dim});
+}
+
+// ── 패킷(흐르는 점) ──────────────────────────────────────────
+const dots=[];
+for(const eo of edgeObjs){
+  const count=eo.dim?2:3;
+  for(let i=0;i<count;i++){
+    const c=el("circle",{r:eo.dim?3:4.5,fill:eo.color,"fill-opacity":eo.dim?0.6:1});
+    gD.appendChild(c); dots.push({eo,off:i/count,c});
+  }
+}
+
+// ── 바퀴(DXL) 2개 ────────────────────────────────────────────
+const WHEELS=[{cx:120,cy:630,name:"좌"},{cx:210,cy:630,name:"우"}];
+const wheelSpokes=[];
+for(const w of WHEELS){
+  gW.appendChild(el("circle",{cx:w.cx,cy:w.cy,r:26,fill:"#161b22",stroke:"#6e7681","stroke-width":3}));
+  gW.appendChild(el("circle",{cx:w.cx,cy:w.cy,r:3,fill:"#6e7681"}));
+  const sp=el("g",{});
+  for(let k=0;k<4;k++){
+    sp.appendChild(el("line",{x1:w.cx,y1:w.cy,x2:w.cx,y2:w.cy-24,stroke:"#f0883e","stroke-width":2.4,
+      transform:`rotate(${k*45} ${w.cx} ${w.cy})`}));
+  }
+  gW.appendChild(sp); wheelSpokes.push({g:sp,cx:w.cx,cy:w.cy,angle:0});
+  const t=el("text",{x:w.cx,y:w.cy+44,"text-anchor":"middle",class:"sublabel"});
+  t.textContent=w.name+" 휠"; gW.appendChild(t);
+}
+
+// ── 제어 파라미터 (assist_controller_node.py 와 동일) ────────
+const P={enter:0.50,exit:0.65,side_min:0.15,side_clear:0.20,front_stop:0.20,
+  v_avoid:0.10,w_avoid:0.6,w_min:0.15,fwd_eps:0.02,manualV:0.18};
+let avoiding=false, side_escaping=false;
+function decide(front,left,right,fwd){
+  if(front<=P.enter)avoiding=true; else if(front>P.exit)avoiding=false;
+  const front_block=avoiding;
+  const front_fully_blocked=front<=P.front_stop;
+  const left_close=left<P.side_min, right_close=right<P.side_min;
+  const nearest=Math.min(left,right);
+  if(nearest<P.side_min)side_escaping=true; else if(nearest>P.side_clear)side_escaping=false;
+  const obstacle=front_block||side_escaping;
+  const engaged=fwd, forward=fwd;
+  let st="STOP",v=0,w=0;
+  if(!engaged){st="STOP";}
+  else if(!obstacle){st="NORMAL";v=P.manualV;w=0;}
+  else if(!forward){st="NORMAL";v=P.manualV;w=0;}
+  else if(left_close&&right_close){
+    if(front_fully_blocked){st="STOP";}
+    else{st="NORMAL";v=Math.min(P.manualV,P.v_avoid);w=0;}   // 좁은 통로 직진 통과
+  }
+  else if(side_escaping){
+    if(left<=right){st="AVOID_RIGHT";w=-P.w_avoid;} else{st="AVOID_LEFT";w=P.w_avoid;}
+    v=0;
+  }else{
+    const turn_left=left>=right;
+    const denom=Math.max(1e-3,P.enter-P.front_stop);
+    let t=(P.enter-front)/denom; t=Math.max(0,Math.min(1,t));
+    const wmag=P.w_min+(P.w_avoid-P.w_min)*t;
+    if(turn_left){st="AVOID_LEFT";w=wmag;}else{st="AVOID_RIGHT";w=-wmag;}
+    v=Math.min(P.manualV,P.v_avoid)*(1-t);
+  }
+  return {st,v,w};
+}
+
+// ── 자동 시나리오 (시간 초, ToF 거리 m) ──────────────────────
+const SCN=[
+  {t:0, f:1.30,l:1.00,r:1.00,fwd:true, note:"정상 주행 — 조이스틱 입력 그대로 전진"},
+  {t:3, f:1.30,l:1.00,r:1.00,fwd:true, note:"정상 주행"},
+  {t:6.5,f:0.36,l:0.90,r:0.26,fwd:true,note:"정면 장애물 접근 · 우측이 더 막힘 → 좌측으로 회피(좌회전)"},
+  {t:9.5,f:1.15,l:1.00,r:0.95,fwd:true,note:"회피 성공 · 정면 다시 열림 → 정상 복귀"},
+  {t:12.5,f:0.55,l:0.12,r:0.12,fwd:true,note:"좁은 통로 · 양쪽 벽 막힘이나 정면 뚫림 → 회전 없이 직진 통과"},
+  {t:15.5,f:0.15,l:0.12,r:0.12,fwd:true,note:"막다른 곳 · 양쪽 + 정면 모두 막힘 → 정지(STOP)"},
+  {t:18.5,f:1.30,l:1.00,r:1.00,fwd:true,note:"사용자 후진/회전으로 탈출 → 정상 주행"},
+  {t:21, f:1.30,l:1.00,r:1.00,fwd:true,note:"정상 주행"},
+];
+const TOTAL=21;
+const lerp=(a,b,u)=>a+(b-a)*u;
+function sample(tt){
+  let i=0; while(i<SCN.length-1 && SCN[i+1].t<=tt)i++;
+  const a=SCN[i],b=SCN[Math.min(i+1,SCN.length-1)];
+  const span=(b.t-a.t)||1; let u=Math.max(0,Math.min(1,(tt-a.t)/span));
+  return {f:lerp(a.f,b.f,u),l:lerp(a.l,b.l,u),r:lerp(a.r,b.r,u),fwd:a.fwd,note:a.note};
+}
+
+const STATE_COLOR={NORMAL:"#3fb950",AVOID_LEFT:"#d29922",AVOID_RIGHT:"#d29922",STOP:"#f85149"};
+
+// ── DOM 핸들 ─────────────────────────────────────────────────
+const $=id=>document.getElementById(id);
+const elF=$("vF"),elL=$("vL"),elR=$("vR"),elState=$("vState"),
+      elV=$("vV"),elW=$("vW"),elWheel=$("vWheel"),elCap=$("caption"),capDot=$("capDot");
+
+// ── 메인 루프 ────────────────────────────────────────────────
+let speed=1,paused=false,last=performance.now(),scnTime=0;
+function frame(now){
+  let dt=(now-last)/1000; last=now;
+  if(dt>0.1)dt=0.1;
+  if(!paused){
+    scnTime=(scnTime+dt*speed)%TOTAL;
+    const s=sample(scnTime);
+    const {st,v,w}=decide(s.f,s.l,s.r,s.fwd);
+    const col=STATE_COLOR[st];
+
+    // 판독부 갱신
+    elF.textContent=s.f.toFixed(2)+" m"; elL.textContent=s.l.toFixed(2)+" m";
+    elR.textContent=s.r.toFixed(2)+" m";
+    elState.textContent=st; elState.style.color=col;
+    elV.textContent=v.toFixed(2)+" m/s"; elW.textContent=w.toFixed(2)+" rad/s";
+    const half=0.15, vL=v-w*half, vR=v+w*half;
+    elWheel.textContent=vL.toFixed(2)+" / "+vR.toFixed(2);
+    elCap.textContent=s.note; capDot.style.background=col;
+    stateText.textContent=st; stateText.setAttribute("fill",col);
+    $("assistRect").setAttribute("stroke",col);
+
+    // 바퀴 회전 (속도 비례)
+    const K=14;
+    wheelSpokes[0].angle+=vL*K*dt*57.3;
+    wheelSpokes[1].angle+=vR*K*dt*57.3;
+    wheelSpokes.forEach(ws=>ws.g.setAttribute("transform",`rotate(${ws.angle} ${ws.cx} ${ws.cy})`));
+
+    // 엣지 종류별 패킷 속도
+    const motion=Math.min(1,(Math.abs(v)+Math.abs(w)*0.3)/0.20);
+    const spd={sensor:0.22, manual:0.20, state:0.13, cmd:0.05+0.40*motion};
+    for(const d of dots){
+      const sp=spd[d.eo.kind]*speed;
+      d.off+=dt*sp; if(d.off>1)d.off-=1; if(d.off<0)d.off+=1;
+      const pt=d.eo.path.getPointAtLength(d.eo.len*d.off);
+      d.c.setAttribute("cx",pt.x); d.c.setAttribute("cy",pt.y);
+      // cmd 패킷은 정지 시 거의 안 보이게
+      if(d.eo.kind==="cmd") d.c.setAttribute("fill-opacity",(0.2+0.8*motion).toFixed(2));
+    }
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// ── 컨트롤 ───────────────────────────────────────────────────
+const btnP=$("btnPause"),btnS=$("btnSpeed");
+btnP.onclick=()=>{paused=!paused; btnP.textContent=paused?"▶ 재생":"⏸ 일시정지";};
+const speeds=[1,2,0.5]; let si=0;
+btnS.onclick=()=>{si=(si+1)%speeds.length; speed=speeds[si]; btnS.textContent="⏩ 속도 "+speed+"×";};
+</script>
+</body>
+</html>
