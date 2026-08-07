@@ -148,7 +148,15 @@ CONFIG = {
     #               시야가 69° 뿐이라 진짜 옆거리는 관측되지 않는다.
     #   'lateral' — 실제 옆거리 |x|. 센서를 ±45° 로 재장착하면 이쪽으로 바꿀 것.
     'side_metric': 'sector',
-    'sector_dead_deg': 0.0,         # 좌우 섹터를 나누는 중앙 불감대 반각
+    # 좌우 섹터에서 **정면 원뿔을 제외**하는 반각. 0 으로 두면 정면 장애물이
+    # 좌우 양쪽 섹터에 다 들어가서, 중앙에서 조금만 치우쳐도 "그쪽이 막혔다"가
+    # 되어 **막힌 쪽으로 조향**한다. 정확히 중앙이면 매 프레임 좌우가 뒤집혀
+    # 제자리에서 떤다 (실주행에서 4번 중 1번만 성공한 원인).
+    # 정면 밴드(±8.5°) 바깥으로 잡는다.
+    'sector_dead_deg': 12.0,
+    # 조향 방향을 한 번 정하면, 반대쪽이 이만큼 더 열려야 바꾼다 [m].
+    # 좌우 거리차가 작을 때 방향이 떠는 것을 막는다 (실측 중앙값 40mm).
+    'side_prefer_margin': 0.12,
     # 3D 계산에서 제외할 행 (천장/먼 배경만 보는 최상단)
     'geom_skip_rows': (0,),
 
@@ -188,11 +196,10 @@ CONFIG = {
     'axis_angular': 'auto',
     'invert_linear': True,          # 스틱 위 = 음수인 장치가 대부분
     'invert_angular': True,         # 스틱 오른쪽 = 양수 → 우회전은 음수
-    # ⚠ 첫 실주행용으로 절반(0.20→0.10)으로 낮춰 뒀다.
-    # 근거: 낭떠러지 감지 실측 12cm 에서 0.20m/s 면 디바운스+지연+제동 후
-    # 여유가 28~48mm 뿐이다. 0.10m/s 면 84~89mm 로 약 2배가 된다 (STATUS.md §6).
-    # 익숙해지면 0.20 으로 되돌릴 것.
-    'scale_linear': 0.10,           # m/s 최대 전진속도
+    # 낭떠러지 감지 실측 12cm 기준 제동 여유 (STATUS.md §6):
+    #   0.10 m/s → 84~89mm  /  0.15 m/s → 58~70mm  /  0.20 m/s → 28~48mm
+    # 0.15 는 절충값. 낭떠러지 근처에서 더 여유가 필요하면 0.10 으로 낮출 것.
+    'scale_linear': 0.15,           # m/s 최대 전진속도
     'scale_angular': 1.0,           # rad/s 최대 회전속도
     'deadzone': 0.05,
     'engage_eps': 0.02,             # 입력 유무 판정
@@ -895,6 +902,23 @@ class Controller:
         self._front_stop = cfg['front_stop_distance']
         self._avoiding = False        # 전방 히스테리시스 래치
         self._side_escaping = False   # 측면 벽 회피 래치
+        self._turn_dir = None         # 조향 방향 커밋 ('left'/'right')
+        self._prefer_margin = cfg.get('side_prefer_margin', 0.0)
+
+    def _pick_dir(self, left, right):
+        """조향 방향을 정하되, 한 번 정하면 반대쪽이 확실히 더 열릴 때까지 유지한다.
+
+        좌우 거리차가 작으면(실측 중앙값 40mm) 노이즈로 방향이 매 프레임 뒤집혀
+        로봇이 제자리에서 떤다. 커밋 + 마진으로 그걸 막는다.
+        """
+        mg = self._prefer_margin
+        if self._turn_dir is None:
+            self._turn_dir = 'left' if left >= right else 'right'
+        elif self._turn_dir == 'left' and right > left + mg:
+            self._turn_dir = 'right'
+        elif self._turn_dir == 'right' and left > right + mg:
+            self._turn_dir = 'left'
+        return self._turn_dir == 'left'
 
     def _front_blocked(self, front):
         if front <= self._enter:
@@ -938,6 +962,7 @@ class Controller:
 
         # ── 3. 장애물 없음 ────────────────────────────────────────────────
         if not obstacle:
+            self._turn_dir = None        # 다음 회피 때 방향을 새로 정한다
             return manual_lin, manual_ang, MODE_NORMAL
 
         # ── 4. 전진 의도 없음 (제자리 회전·후진) ──────────────────────────
@@ -953,12 +978,12 @@ class Controller:
 
         # ── 6. 측면 벽 근접 → 벽에서 멀어지게 회전, 전진 0 ────────────────
         if self._side_escaping:
-            if left <= right:
-                return 0.0, -cfg['w_avoid'], MODE_AVOID_RIGHT   # 좌측 벽 → 우회전
-            return 0.0, cfg['w_avoid'], MODE_AVOID_LEFT         # 우측 벽 → 좌회전
+            if self._pick_dir(left, right):
+                return 0.0, cfg['w_avoid'], MODE_AVOID_LEFT     # 좌측이 열림 → 좌회전
+            return 0.0, -cfg['w_avoid'], MODE_AVOID_RIGHT
 
         # ── 7. 전방 장애물 → 더 열린 쪽으로 비례 조향 ─────────────────────
-        turn_left = left >= right                    # 동률은 좌측 우선
+        turn_left = self._pick_dir(left, right)      # 커밋 + 마진 (떨림 방지)
         denom = max(1e-3, self._enter - self._front_stop)
         t = clamp((self._enter - front) / denom, 0.0, 1.0)
         w_mag = cfg['w_min'] + (cfg['w_avoid'] - cfg['w_min']) * t
@@ -1399,6 +1424,21 @@ PAGE = r"""<!doctype html>
   .spacer{flex:1}
   .meta{color:var(--dim);font-size:12px;font-variant-numeric:tabular-nums}
 
+  /* 상단 고정 리소스 스트립 — ToF 격자와 항상 같이 보이도록 헤더에 둔다.
+     아래 상세 카드는 스크롤해야 보여서 실주행 중에는 못 본다. */
+  .sysbar{display:inline-flex;gap:10px;align-items:center;flex-wrap:wrap;
+          font-size:12px;font-variant-numeric:tabular-nums}
+  .sysbar .it{display:inline-flex;gap:4px;align-items:baseline;
+              padding:2px 8px;border-radius:6px;background:var(--panel);
+              border:1px solid var(--line)}
+  .sysbar .k{color:var(--dim);font-size:11px}
+  .sysbar .v{font-weight:600}
+  .sysbar .it.warn{border-color:#7a5a12} .sysbar .it.warn .v{color:var(--warn)}
+  .sysbar .it.bad{border-color:#8b2a26}  .sysbar .it.bad .v{color:var(--bad)}
+  .sysbar .dot{width:7px;height:7px;border-radius:50%;background:var(--ok);
+               display:inline-block}
+  .sysbar .dot.off{background:var(--bad)}
+
   #alert{display:none;margin:10px 14px 0;padding:10px 14px;border-radius:8px;
          background:#3d1416;border:1px solid var(--bad);color:#ffb4ae;
          font-weight:700}
@@ -1475,6 +1515,7 @@ PAGE = r"""<!doctype html>
   <span class="badge" id="mode">—</span>
   <span class="badge" id="link">연결 대기</span>
   <span class="spacer"></span>
+  <span class="sysbar" id="sysbar"></span>
   <span class="meta" id="meta">—</span>
 </header>
 
@@ -1691,7 +1732,7 @@ function render(s){
   setBar("ol", o.linear_x, 0.22); document.getElementById("olv").textContent = o.linear_x.toFixed(2);
   setBar("oa", o.angular_z, 1.5); document.getElementById("oav").textContent = o.angular_z.toFixed(2);
 
-  renderSys(s.sys, s.hz);
+  renderSys(s.sys, s.hz, s.self_name);
 }
 
 // ── 리소스 카드 ─────────────────────────────────────────────────────────
@@ -1703,7 +1744,29 @@ function card(cls, title, big, sub, meter){
   return `<div class="card ${cls||""}"><div class="t">${title}</div>
           <div class="big">${big}</div><div class="sub">${sub}</div>${m}</div>`;
 }
-function renderSys(sys, hz){
+// 헤더 스트립 — 격자를 보면서 동시에 읽히도록 한 줄로 압축한다
+function renderSysBar(sys){
+  const el = document.getElementById("sysbar");
+  if (!sys){ el.innerHTML = ""; return; }
+  const sv = sys.system, p = sys.procs || {};
+  const lv = (v, warn, bad) => v >= bad ? "bad" : (v >= warn ? "warn" : "");
+  const item = (k, v, cls) =>
+    `<span class="it ${cls||""}"><span class="k">${k}</span><span class="v">${v}</span></span>`;
+  // 프로세스 생사는 색 점 + 이름으로 (색만으로 뜻을 전하지 않는다)
+  const dots = Object.entries(p).map(([n, d]) =>
+    `<span class="it ${d ? "" : "bad"}"><span class="dot ${d ? "" : "off"}"></span>` +
+    `<span class="k">${n.replace(/\.py$/, "")}</span>` +
+    `<span class="v">${d ? d.cpu_pct.toFixed(0) + "%" : "없음"}</span></span>`).join("");
+  el.innerHTML =
+    dots +
+    item("CPU", sv.cpu_pct.toFixed(0) + "%", lv(sv.cpu_pct, 70, 90)) +
+    item("MEM", sv.mem_pct.toFixed(0) + "%", lv(sv.mem_pct, 80, 92)) +
+    (sv.temp_c === null ? "" :
+      item("온도", sv.temp_c.toFixed(0) + "°C", lv(sv.temp_c, 70, 80)));
+}
+
+function renderSys(sys, hz, selfName){
+  renderSysBar(sys);
   if (!sys){ cardsEl.innerHTML = card("", "리소스 모니터", "꺼짐", "--no-sysmon", null); return; }
   const p = sys.procs || {}, sv = sys.system || {};
   const n = sys.cpu_count || 1;
@@ -1719,7 +1782,7 @@ function renderSys(sys, hz){
   };
   cardsEl.innerHTML =
     // 제어 프로세스 이름은 서버가 알려준다 (tof.py / tof_2.py 구분)
-    proc(s.self_name || "tof.py", (s.self_name || "tof.py") + " (제어)",
+    proc(selfName || "tof.py", (selfName || "tof.py") + " (제어)",
          ` · ${hz ? hz.toFixed(1) : "?"}Hz`) +
     proc("mqtt.py", "mqtt.py (ROS2 브리지)", "") +
     card("", "시스템 CPU", sv.cpu_pct.toFixed(1) + "%",
